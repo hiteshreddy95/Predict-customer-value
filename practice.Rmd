@@ -1,0 +1,207 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+### Clearing the r environment  
+```{r}
+rm(list = ls(all=TRUE))
+```
+
+
+### Reading the train dataset. There are 3 train datasets(train_trainsactions,train_demographic and train target)
+```{r}
+train_transactions = read.csv(file = "Train_Transactions-1546579767306.csv",header = TRUE, na.strings = c("NA","","?"," "))
+train_demographics = read.csv("Train_Demographics-1546580051604.csv",header = TRUE,na.strings = c("NA","","?"," "))
+Train_target = read.csv("Train-1546582083062.csv",header = TRUE,na.strings = c("NA","","?"," "))
+```
+
+
+```{r}
+train_transactions
+str(train_transactions$ProductID)
+unique(train_transactions$ProductID)
+```
+
+```{r}
+new <- do.call( rbind , strsplit( as.character( train_transactions$BillDate ) , " " ) )
+train_transactions <- cbind( train_transactions , Time = new[,2] , Date = new[,1] )
+train_transactions$BillDate <- NULL
+train_transactions
+```
+
+```{r}
+library(data.table)
+tt2 = copy(train_transactions)
+tt2
+```
+
+
+```{r}
+tt2$Date <- as.Date(tt2$Date)
+class(tt2$Date)
+tt2
+```
+
+```{r}
+tt2$days_since <- as.numeric(difftime(time1 = "2014-01-01",time2 = tt2$Date,units = "days"))
+tt2$days_since <- floor(tt2$days_since)
+tt2
+```
+
+```{r}
+tt2$total_purchase <- tt2$Quantity*tt2$UnitPrice
+tt2
+```
+
+```{r}
+tt2$hour <- as.numeric(gsub("\\:.*$", "", tt2$Time))
+tt2$purchase_time <- with(tt2,  ifelse(hour >= 5 & hour<=11, "morning",
+                            ifelse(hour>11 & hour<=16, "evening", "night")))
+```
+
+
+```{r}
+str(tt2$CustomerId)
+tt2$BillNumber <- NULL
+tt2$ProductID <- NULL
+table(tt2$purchase_time)
+tt2
+str(tt2)
+```
+
+```{r}
+Hour <- copy(tt2$hour)
+Purchase_time <- copy(tt2$purchase_time)
+```
+
+
+```{r}
+library(sqldf)
+```
+
+
+```{r}
+train_transaction1 = sqldf(" SELECT CustomerId, MIN(days_since) AS 'recency',COUNT(*) AS 'frequency', AVG(total_purchase) AS 'amount', SUM(Quantity) AS 'total_quantity', SUM(UnitPrice) AS 'total_UnitPrice', AVG(Quantity) AS 'avg_quantity', AVG(UnitPrice) AS 'avg_UnitPrice', (hour) AS 'Time', (purchase_time) AS 'Purchase_time' FROM tt2 GROUP BY 1")
+```
+
+```{r}
+train_transaction1
+str(train_transaction1)
+train_transaction1
+```
+
+```{r}
+train_transaction1$Time <- as.factor(train_transaction1$Time)
+class(train_transaction1$Time)
+str(train_transaction1$Time)
+#str(tra)
+```
+
+
+```{r}
+train_demographics$DOB <- as.Date(train_demographics$DOB)
+str(train_demographics)
+```
+
+```{r}
+library(lubridate)
+library(eeptools)
+train_demographics$Age = ((floor(age_calc(train_demographics$DOB, units = "years")))-5)
+str(train_demographics$Age)
+```
+
+```{r}
+train_merge1 <- merge(train_transaction1,train_demographics,by = "CustomerId",all = T)
+train_data <- merge(train_merge1,Train_target,by="CustomerId",all = T)
+str(train_data)
+```
+
+```{r}
+summary(train_data)
+```
+
+```{r}
+train_data$CustomerId <- NULL
+train_data$Familysize <- as.factor(train_data$Familysize)
+train_data$Purchase_time <- as.factor(as.character(train_data$Purchase_time))
+str(train_data)
+sum(is.na(train_data))
+```
+
+
+```{r}
+library(caret)
+set.seed(123)
+train_rows <- createDataPartition(train_data$CustomerValue,p = 0.7,list = FALSE)
+train_split = train_data[train_rows,]
+validation_split = train_data[-train_rows,]
+str(train_split)
+```
+
+
+
+```{r}
+library(randomForest)
+rf = randomForest(CustomerValue~.,train_split,keep.forest = TRUE,ntree = 100,norm.votes = TRUE,maxnodes = 100)
+summary(rf)
+print(rf)
+```
+
+```{r}
+pred_train <- predict(rf,train_data[,-15],type = "class")
+confusionMatrix(pred_train,train_data$CustomerValue)
+```
+
+```{r}
+pred_rf1 <- predict(rf,validation_split[,-15],type = "Class")
+confusionMatrix(pred_rf1,validation_split$CustomerValue)
+table(pred_rf1)
+```
+
+```{r}
+library(caret)
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+seed <- 7
+metric <- "Accuracy"
+set.seed(seed)
+mtry <- sqrt(ncol(train_data))
+tunegrid <- expand.grid(.mtry = mtry)
+rf_default <- train(CustomerValue~.,data = train_data, method = "rf", metric = metric, tuneGrid = tunegrid)
+print(rf_default)
+summary(rf_default)
+```
+
+```{r}
+library(mlbench)
+library(caret)
+library(caretEnsemble)
+# Example of Boosting Algorithms
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+seed <- 7
+metric <- "Accuracy"
+# C5.0
+set.seed(seed)
+fit.c50 <- train(CustomerValue~., data=train_data, method="C5.0", metric=metric, trControl=control)
+# Stochastic Gradient Boosting
+set.seed(seed)
+fit.gbm <- train(CustomerValue~., data=train_data, method="gbm", metric=metric, trControl=control, verbose=FALSE)
+# summarize results
+boosting_results <- resamples(list(c5.0=fit.c50, gbm=fit.gbm))
+summary(boosting_results)
+dotplot(boosting_results)
+```
+
+```{r}
+# print(fit.c50)
+# summary(fit.c50)
+# print(fit.gbm)
+# summary(fit.gbm)
+```
+
+### XGBoost
+```{r}
+train.control <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+model_xgbTree <- train(CustomerValue ~ .,data=train_data, metric=metric, method = "xgbTree", trControl = train.control)
+print(model_xgbTree)
+```
